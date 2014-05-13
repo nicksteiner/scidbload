@@ -123,7 +123,6 @@ class ScidbArray(object):
 
         self.host = host
         self.port = port
-
         self.afl = self.afl_fun(array_name)
 
         with Scidb(self.host, self.port) as db:
@@ -133,6 +132,7 @@ class ScidbArray(object):
         self.description = self.array.getArrayDesc()
         self.attributes = self.description.attributes
         self.dimensions = self.description.dimensions
+        self.attsLoaded = []
         if verbose:
             atts_ = '\n'.join([att.Name for att in self.description.attributes])
             print('\nAttributes:\n {0}'.format(atts_))
@@ -181,9 +181,27 @@ class ScidbArray(object):
             for n, a in zip(n_,a_):
                 self._sa[n] = a
         return self._sa
+    
+    @property
+    def sp(self):
+        ''' Numpy sparse-structured array. '''
+        if not hasattr(self, '_sa'):
+            n_, t_, a_ = zip(*[(n, d.array.dtype, d.array) for n, d 
+                    in self.data.iteritems()])
+            dtype = dict(names=n_, formats=t_)
+            self._sa = np.empty(shape=a_[0].shape, dtype=dtype)
+            for n, a in zip(n_,a_):
+                self._sa[n] = a
+        return self._sa
 
-    def load_all(self):
-        self.load(self.attributes.keys())
+    def load_sparse(self):
+        pass
+
+    def load_all(self, type_='dense'):
+        if type_ == 'dense':
+            self.load(self.attributes.keys())
+        elif type_ == 'sparse':
+            self.load_sparse(self.attributes.keys())
         return self.data
 
     def load(self, att_list):
@@ -208,12 +226,12 @@ class ScidbArray(object):
                         data.set_chunk()
                     except:
                         continue
+        self.attsLoaded.extend(att_list)
 
     def __call__(self):
         # set properties
         self.load_all()
         return self
-
 
 class Data(object):
     '''Numpy data array '''
@@ -236,7 +254,10 @@ class Data(object):
     def _get_array(self):
         size_ = tuple([abs(dim.Start - dim.EndMax) for dim in self.dims])
         data = np.empty(size_, dtype=SDB_NP_TYPE_MAP[self.att.Type])
-        data[:] = self.null
+        try:
+            data[:] = self.null
+        except:
+            data[:] = -9999
         return data
 
     def set_chunk(self):
@@ -268,9 +289,8 @@ class Description:
     _name = 'description'
 
     def __str__(self):
-        dim_ = ','.join([dim.__str__() for dim in self.dimensions])
-        att_ = ','.join([att.__str__() for att in self.attributes])
-        return '{0} <{1}> [{2}]'.format(self.Name, att_, dim_,)
+
+        return '{0} {1}'.format(self.Name, self.anonymous_schema)
 
     def __init__(self, description):
         self.description = description
@@ -285,6 +305,18 @@ class Description:
         self.UsedSpace = description.getUsedSpace()
         self.Id = description.getId()
         self.VersionId = description.getVersionId()
+        
+    @property
+    def anonymous_schema(self):
+        return '<{}> [{}]'.format(self.att_str, self.dim_str)
+
+    @property
+    def dim_str(self):
+        return ','.join([dim.__str__() for dim in self.dimensions])
+
+    @property
+    def att_str(self):
+        return ','.join([att.__str__() for att in self.attributes])
 
     @property
     def attributes(self):
@@ -314,7 +346,11 @@ class Attribute:
     _name = 'attribute'
 
     def __str__(self):
-        return "{Name}:{Type}".format(**self.__dict__)
+        type_ = self.Type
+        if self.IsNullable:
+            type_ += ' null'
+        return "{}:{}".format(self.Name, type_)
+
     def __repr__(self):
             return "<Attribute({0})>".format(self.__str__())
     def __init__(self, attribute):
@@ -329,7 +365,7 @@ class Attribute:
         self.Size = attribute.getSize()
         self.Type = attribute.getType()
         self.VarSize = attribute.getVarSize()
-
+        self.IsNullable = attribute.isNullable()
 
 class Dimension:
     '''Scidb array dimension.'''
@@ -376,9 +412,9 @@ class List(ScidbArray):
 
     afl_fun = str
 
-    def __init__(self):
+    def __init__(self, host='localhost'):
         #super(ScidbArray, self).__init__('list()')
-        ScidbArray.__init__(self, 'list()', verbose=False)
+        ScidbArray.__init__(self, 'list()', verbose=False, host=host)
         self.load_all()
 
     def __call__(self):
